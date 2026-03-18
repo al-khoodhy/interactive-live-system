@@ -10,6 +10,15 @@ use App\Models\CommentSession;
 
 Route::prefix('v1')->group(function () {
     
+Route::get('sfx', [App\Http\Controllers\Api\SfxController::class, 'index']);
+Route::post('sfx', [App\Http\Controllers\Api\SfxController::class, 'store']);
+Route::delete('sfx/{filename}', [App\Http\Controllers\Api\SfxController::class, 'destroy']);
+
+
+Route::get('animations', [App\Http\Controllers\Api\AnimationController::class, 'index']);
+Route::post('animations', [App\Http\Controllers\Api\AnimationController::class, 'store']);
+Route::delete('animations/{filename}', [App\Http\Controllers\Api\AnimationController::class, 'destroy']);
+
     // Manajemen Pustaka Video
     Route::apiResource('assets', AssetController::class);
     

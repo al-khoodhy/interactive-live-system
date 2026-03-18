@@ -47,17 +47,38 @@ app.post('/api/force-next', async (req, res) => {
 
 // === API: PENGATURAN MESIN OTOMATISASI ===
 app.post('/api/engine/settings', (req, res) => {
-    const { maxResponsesPerUser } = req.body;
-    if (maxResponsesPerUser !== undefined) {
-        engine.maxResponsesPerUser = parseInt(maxResponsesPerUser);
-        console.log(`[Engine] Pengaturan Batas Balasan diubah menjadi: ${engine.maxResponsesPerUser}x per penonton.`);
+    const { maxResponsesPerUser, enableTts, enableOverlay, ttsVolume, ttsLang, ttsSpeed, enableSfx, sfxMin, sfxMax, enableAnimation, animationInterval } = req.body;
+    
+    if (maxResponsesPerUser !== undefined) engine.maxResponsesPerUser = parseInt(maxResponsesPerUser);
+    if (enableTts !== undefined) engine.enableTts = enableTts;
+    if (enableOverlay !== undefined) engine.enableOverlay = enableOverlay;
+    if (ttsVolume !== undefined) engine.ttsVolume = parseFloat(ttsVolume);
+    if (ttsLang !== undefined) engine.ttsLang = ttsLang;
+    if (ttsSpeed !== undefined) engine.ttsSpeed = ttsSpeed;
+    
+    // --- PENGATURAN SFX BARU ---
+    if (enableSfx !== undefined) {
+        engine.enableSfx = enableSfx;
+        engine.sfxMin = parseInt(sfxMin) || 30;
+        engine.sfxMax = parseInt(sfxMax) || 120;
+        
+        // Pemicu untuk me-restart atau mematikan mesin SFX seketika saat tombol ditekan
+        engine.manageSfxLoop(); 
     }
+
+    if (enableAnimation !== undefined) {
+        engine.enableAnimation = enableAnimation;
+        engine.animationInterval = parseInt(animationInterval) || 300; // Default 5 menit (300 detik)
+        engine.manageAnimationLoop(); // Pelatuk restart timer animasi
+    }
+    
+    console.log(`[Engine] Pengaturan Diubah -> Kuota: ${engine.maxResponsesPerUser}x | TTS: ${engine.enableTts ? 'ON' : 'OFF'} | SFX Acak: ${engine.enableSfx ? 'ON' : 'OFF'}`);
+    
     res.json({ message: 'Pengaturan mesin berhasil diperbarui.' });
 });
 
 // === 3. API: INTEGRASI TIKTOK LIVE ===
 app.post('/api/tiktok/connect', async (req, res) => {
-    // 1. Menerima apiKey dari Frontend (bukan lagi sessionId)
     const { tiktokUsername, apiKey } = req.body;
     
     if (!tiktokUsername) return res.status(400).json({ error: 'Username TikTok wajib diisi.' });
@@ -74,9 +95,7 @@ app.post('/api/tiktok/connect', async (req, res) => {
             enableExtendedGiftInfo: true
         };
 
-        // 2. MENGGUNAKAN EULERSTREAM API KEY
         if (apiKey && apiKey.trim() !== '') {
-            // Ini adalah parameter resmi dari library untuk menggunakan EulerStream
             connectionOptions.apiKey = apiKey.trim(); 
             console.log(`[TikTok] Menggunakan EulerStream API Key untuk bypass Rate Limit.`);
         }
@@ -88,9 +107,7 @@ app.post('/api/tiktok/connect', async (req, res) => {
         console.log(`[TikTok] Berhasil terhubung ke Room ID: ${state.roomId}`);
         io.emit('tiktok_status', { status: 'connected', username: tiktokUsername });
         
-        // 3. MENANGKAP KOMENTAR
         tiktokConnection.on('chat', data => {
-            // Menyerahkan komentar murni ke Mesin AI kita
             engine.handleIncomingComment(data.uniqueId, data.comment);
         });
 
@@ -141,16 +158,19 @@ app.post('/api/tiktok/disconnect', (req, res) => {
     res.json({ message: 'Koneksi TikTok berhasil diputus.' });
 });
 
-app.post('/api/tiktok/disconnect', (req, res) => {
-    if (tiktokConnection) {
-        tiktokConnection.disconnect();
-        tiktokConnection = null;
-        io.emit('tiktok_status', { status: 'disconnected', message: 'Koneksi diputus secara manual.' });
-    }
-    res.json({ message: 'Koneksi TikTok berhasil diputus.' });
+// === 4. API: REFRESH SFX ===
+// Rute untuk me-refresh daftar SFX di memori AI tanpa restart
+app.post('/api/engine/refresh-sfx', async (req, res) => {
+    await engine.fetchSfxList();
+    res.json({ message: 'Daftar SFX di mesin berhasil diperbarui.' });
 });
 
-// === 4. START SERVER ===
+app.post('/api/engine/refresh-animations', async (req, res) => {
+    await engine.fetchAnimationList();
+    res.json({ message: 'Daftar Animasi berhasil diperbarui.' });
+});
+
+// === 5. START SERVER ===
 server.listen(3000, () => {
     console.log('[Server] Real-time Engine & TikTok Connector aktif di Port 3000');
 });

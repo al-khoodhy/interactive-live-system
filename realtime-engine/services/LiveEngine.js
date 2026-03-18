@@ -2,6 +2,7 @@
 const db = require('../config/db');
 const { NlpManager } = require('node-nlp');
 const axios = require('axios');
+const googleTTS = require('google-tts-api');
 
 class LiveEngine {
     constructor(io) {
@@ -16,44 +17,143 @@ class LiveEngine {
         this.qaQueue = []; 
         this.remainingQuota = 0;
         
-        // PENGATURAN BATAS BALASAN ADMIN
+        // --- PENGATURAN KENDALI ADMIN ---
         this.maxResponsesPerUser = 3; 
-        this.userResponseCount = new Map();
+        this.enableTts = true;
+        this.enableOverlay = true;
+        this.ttsVolume = 1.0;
+        this.ttsLang = 'id';
+        this.ttsSpeed = false;
+
+        // --- PENGATURAN ANIMASI OVERLAY ---
+        this.enableAnimation = false;
+        this.animationInterval = 300; // Muncul setiap 300 detik
+        this.animationTimer = null;
+        this.animationList = [];
         
+        this.fetchAnimationList(); // Panggil di constructor
+        
+        // --- PENGATURAN SFX DINAMIS ---
+        this.enableSfx = false;
+        this.sfxMin = 30;
+        this.sfxMax = 120;
+        this.sfxTimer = null;
+        this.sfxList = []; // WAJIB KOSONG: Akan diisi otomatis dari API Laravel
+        
+        this.userResponseCount = new Map();
         this.isProcessingComment = false;
         this.userCooldowns = new Map(); 
 
+        // KAMUS TRANSLASI BAHASA GAUL (SLANG & TYPO DICTIONARY)
         this.slangDictionary = {
-            // 1. Transaksi & Tanya Harga
             "brp": "berapa", "brapa": "berapa", "hrg": "harga", "hrga": "harga", "bl": "beli", 
             "bku": "buku", "co": "checkout", "tf": "transfer", "ongkir": "ongkos kirim", 
             "cod": "bayar di tempat", "duit": "uang", "mahal": "mahal", "murah": "murah", "diskon": "promo",
-            
-            // 2. Sapaan & Kata Ganti
             "bg": "bang", "bng": "bang", "min": "admin", "kk": "kakak", "kak": "kakak", 
             "sy": "saya", "aq": "aku", "gw": "saya", "gue": "saya", "lu": "kamu", "km": "kamu",
-            
-            // 3. Kata Hubung & Penunjuk Tempat
             "gmn": "bagaimana", "gimana": "bagaimana", "cr": "cara", "klo": "kalau", "klu": "kalau", 
             "mna": "dimana", "dmn": "dimana", "yg": "yang", "knp": "kenapa", "dgn": "dengan", 
             "utk": "untuk", "buat": "untuk", "trs": "terus", "tp": "tapi", "kpn": "kapan", "dr": "dari",
-            
-            // 4. Skincare & Beauty Terms (Spesifik Kulit)
             "jrwtn": "jerawatan", "jrwt": "jerawat", "bruntus": "bruntusan", "kusem": "kusam", 
             "bks": "bekas", "fw": "sabun muka", "ss": "sunscreen", "moist": "pelembap", 
             "krim": "cream", "brminyak": "berminyak", "minyakan": "berminyak", "kering": "kering",
             "sensi": "sensitif", "bopeng": "bekas luka", "flek": "noda hitam", "glowing": "cerah",
-            
-            // 5. TikTok Slang
             "spill": "kasih tahu", "dong": "tolong", "pls": "tolong", "bgt": "banget", 
             "beneran": "sungguh", "bner": "benar", "gk": "tidak", "ga": "tidak", "gak": "tidak",
             "tdk": "tidak", "blm": "belum", "udah": "sudah", "udh": "sudah", "dpt": "dapat"
         };
 
         this.nlp = new NlpManager({ languages: ['id'], forceNER: true, nlu: { log: false } });
+        
+        // INISIASI KECERDASAN SAAT SERVER MENYALA
         this.trainAiModel();
+        this.fetchSfxList(); 
     }
 
+    // --- FUNGSI SFX ---
+    async fetchSfxList() {
+        try {
+            const res = await axios.get('http://127.0.0.1:8000/api/v1/sfx');
+            if (res.data && res.data.data) {
+                // Menyimpan URL absolut yang siap diputar oleh Layar 2 (React)
+                this.sfxList = res.data.data.map(item => item.url);
+                console.log(`[SFX Engine] 🎵 Berhasil memuat ${this.sfxList.length} efek suara dari CMS.`);
+            }
+        } catch (error) {
+            console.error('[SFX Engine] ❌ Gagal memuat daftar SFX dari Laravel. (Mencoba lagi nanti...)');
+        }
+    }
+
+    manageSfxLoop() {
+        // 1. Bersihkan timer lama agar suara tidak tumpang tindih
+        if (this.sfxTimer) {
+            clearTimeout(this.sfxTimer);
+            this.sfxTimer = null;
+        }
+
+        // 2. Berhenti jika sakelar dimatikan atau database suara kosong
+        if (!this.enableSfx || !this.sfxList || this.sfxList.length === 0) {
+            console.log(`[SFX Engine] ⏸️ SFX Acak Dimatikan / Daftar Suara Kosong.`);
+            return;
+        }
+
+        // 3. Kalkulasi Waktu & Eksekusi
+        const randomSeconds = Math.floor(Math.random() * (this.sfxMax - this.sfxMin + 1)) + this.sfxMin;
+        console.log(`[SFX Engine] ⏳ Menyiapkan efek suara berikutnya dalam ${randomSeconds} detik...`);
+
+        this.sfxTimer = setTimeout(() => {
+            const randomSfxUrl = this.sfxList[Math.floor(Math.random() * this.sfxList.length)];
+            const fileName = randomSfxUrl.split('/').pop(); // Mengambil nama file untuk log terminal
+            
+            console.log(`[SFX Engine] 🔊 Memainkan efek suara: ${fileName}`);
+            this.io.emit('play_sfx', { url: randomSfxUrl });
+            
+            // Panggil kembali dirinya sendiri untuk terus looping
+            this.manageSfxLoop();
+        }, randomSeconds * 1000);
+    }
+
+    async fetchAnimationList() {
+        try {
+            const res = await axios.get('http://127.0.0.1:8000/api/v1/animations');
+            if (res.data && res.data.data) {
+                // KUNCI: Kita simpan URL-nya, tapi nanti Node.js yang akan mendownload isinya
+                this.animationList = res.data.data.map(item => item.url);
+                console.log(`[Animation Engine] 🎬 Berhasil memuat ${this.animationList.length} animasi.`);
+            }
+        } catch (error) { console.error('[Animation Engine] ❌ Gagal memuat daftar Animasi.'); }
+    }
+
+    async manageAnimationLoop() {
+        if (this.animationTimer) {
+            clearInterval(this.animationTimer);
+            this.animationTimer = null;
+        }
+
+        if (!this.enableAnimation || !this.animationList || this.animationList.length === 0) return;
+
+        console.log(`[Animation Engine] ⏳ Animasi akan muncul setiap ${this.animationInterval} detik.`);
+        
+        this.animationTimer = setInterval(async () => {
+            const randomAnimUrl = this.animationList[Math.floor(Math.random() * this.animationList.length)];
+            
+            try {
+                // SOLUSI MUTLAK CORS: Node.js yang mendownload isi JSON-nya
+                const response = await axios.get(randomAnimUrl);
+                const animationData = response.data; // Ini adalah wujud asli file JSON Lottie
+                
+                console.log(`[Animation Engine] 🚀 Menyiarkan Data Animasi Lottie ke React!`);
+                
+                // Node.js mengirimkan "Isi JSON" (Object), bukan sekadar URL
+                this.io.emit('play_animation', { animationData: animationData });
+            } catch (error) {
+                console.error(`[Animation Engine] Gagal membaca isi file Lottie dari Laravel.`);
+            }
+            
+        }, this.animationInterval * 1000);
+    }
+
+    // --- FUNGSI NLP & KECERDASAN BUATAN ---
     preprocessText(text) {
         let words = text.toLowerCase().replace(/[^\w\s]/gi, '').split(' ');
         return words.map(word => this.slangDictionary[word] || word).join(' ');
@@ -72,7 +172,6 @@ class LiveEngine {
             }
 
             let trainedCount = 0;
-
             intentsData.forEach(intent => {
                 let utterances = intent.utterances;
                 try { if (typeof utterances === 'string') utterances = JSON.parse(utterances); } catch (e) {}
@@ -92,15 +191,16 @@ class LiveEngine {
                 await this.nlp.train();
                 console.log(`[AI Engine] ✅ Berhasil melatih ${intentsData.length} Kategori dengan ${trainedCount} kalimat pola.`);
             } else {
-                console.warn(`[AI Engine] ⚠️ Kamus ditemukan, tapi tidak ada kalimat pola yang valid.`);
+                console.warn(`[AI Engine] ⚠️ Kamus ditemukan, tapi tidak ada pola yang valid.`);
             }
         } catch (error) { 
             console.error('[AI Engine] ❌ Gagal mengunduh kamus:', error.message); 
-            console.log('[AI Engine] ⏳ Peladen Laravel sepertinya belum siap. Mencoba lagi dalam 10 detik...');
+            console.log('[AI Engine] ⏳ Peladen Laravel belum siap. Mencoba lagi dalam 10 detik...');
             setTimeout(() => this.trainAiModel(), 10000); 
         }
     }
 
+    // --- FUNGSI MANAJEMEN ALUR (FSM) ---
     async startActiveProject(targetProjectId) {
         if (!targetProjectId) return;
         try {
@@ -116,10 +216,10 @@ class LiveEngine {
             this.currentBlockIndex = 0; 
             this.loopCounter = 1;
             this.qaQueue = []; 
-            
-            // RESET PENTING: Membuka kembali kuota semua pengguna saat siaran profil baru dimulai
             this.userResponseCount.clear(); 
             
+            this.manageAnimationLoop();
+            this.manageSfxLoop(); // Picu putaran SFX Acak
             await this.executeCurrentBlock(); 
         } catch (error) { console.error(error); }
     }
@@ -172,7 +272,15 @@ class LiveEngine {
             
             this.currentState = 'PLAYING_RESPONSE';
             this.remainingQuota--;
-            this.io.emit('play_video', { url: nextQa.videoUrl, category: 'response' });
+            this.io.emit('play_video', { 
+                url: nextQa.videoUrl, 
+                category: 'response',
+                username: nextQa.username,
+                comment: nextQa.comment,
+                ttsUrl: nextQa.ttsUrl,
+                showOverlay: nextQa.showOverlay,
+                ttsVolume: nextQa.ttsVolume
+            });
         } else {
             console.log('[Engine] ⏭️ Antrean kosong/Kuota habis. Lanjut materi berikutnya.');
             this.currentBlockIndex++;
@@ -195,16 +303,14 @@ class LiveEngine {
     async handleIncomingComment(username, rawText) {
         if (this.isProcessingComment) return;
 
-        // PERBAIKAN MUTLAK 1: Sensor Anti-Spam sekarang memiliki "Suara" dan durasi dipangkas
         if (this.userCooldowns.has(username)) {
-            console.log(`[AI Scanner] ⏳ Abaikan: @${username} sedang dalam jeda anti-spam (tunggu 3 detik).`);
+            console.log(`[AI Scanner] ⏳ Abaikan: @${username} sedang dalam jeda anti-spam (3 detik).`);
             return;
         }
 
-        // PERBAIKAN MUTLAK 2: Sensor Kuota Admin
         const currentCount = this.userResponseCount.get(username) || 0;
         if (currentCount >= this.maxResponsesPerUser) {
-            console.log(`[AI Scanner] 🛑 Abaikan: @${username} sudah mencapai batas maksimal balasan dari Admin (${this.maxResponsesPerUser}x).`);
+            console.log(`[AI Scanner] 🛑 Abaikan: @${username} sudah mencapai batas maksimal balasan.`);
             return;
         }
 
@@ -218,11 +324,7 @@ class LiveEngine {
             console.log(`[AI Scanner] Komentar: "${cleanText}" | Terdeteksi: ${response.intent} | Skor: ${response.score.toFixed(2)}`);
 
             if (response.intent !== 'None' && response.score >= requiredConfidence) {
-                
-                if (!this.projectId) {
-                    console.log(`[AI Queue] ❌ Ditolak. Engine belum memuat ID Profil dari Layar 2.`);
-                    return;
-                }
+                if (!this.projectId) return;
 
                 const qAsset = `
                     SELECT a.file_path FROM trigger_response_assets tra
@@ -236,27 +338,44 @@ class LiveEngine {
                 if (assetRes.rows.length > 0) {
                     const videoUrl = assetRes.rows[0].file_path;
                     
-                    // PENAMBAHAN KUOTA PENGGUNA YANG BERHASIL
+                    // --- SISTEM TTS (Base64) ---
+                    let ttsUrl = '';
+                    if (this.enableTts) {
+                        try {
+                            const safeText = cleanText.length > 150 ? cleanText.substring(0, 150) : cleanText;
+                            const sapaan = `Pertanyaan dari ${username}, ${safeText}`;
+                            
+                            const base64Audio = await googleTTS.getAudioBase64(sapaan, {
+                                lang: this.ttsLang, 
+                                slow: this.ttsSpeed,
+                                host: 'https://translate.google.com',
+                                timeout: 5000
+                            });
+                            ttsUrl = `data:audio/mp3;base64,${base64Audio}`;
+                        } catch (err) {
+                            console.error('[TTS] Gagal membuat suara:', err.message);
+                        }
+                    }
+                    
                     this.userResponseCount.set(username, currentCount + 1);
-                    console.log(`[AI Queue] ✔️ Video untuk '${response.intent}' siap. (Balasan ke-${currentCount + 1} untuk @${username})`);
+                    console.log(`[AI Queue] ✔️ Video untuk '${response.intent}' siap. Masuk Antrean.`);
                     
                     this.qaQueue.push({
                         username: username,
+                        comment: rawText, 
                         intent: response.intent,
                         videoUrl: videoUrl,
+                        ttsUrl: ttsUrl,
+                        showOverlay: this.enableOverlay,
+                        ttsVolume: this.ttsVolume,
                         timestamp: Date.now()
                     });
 
-                    // JEDA SEMENTARA DIPANGKAS MENJADI 3 DETIK SAJA
                     this.userCooldowns.set(username, true);
                     setTimeout(() => this.userCooldowns.delete(username), 3000); 
                 } else {
-                    console.log(`[AI Queue] ❌ Ditolak. Profil ID ${this.projectId} belum memetakan video untuk intent '${response.intent}'.`);
+                    console.log(`[AI Queue] ❌ Ditolak. Belum dipetakan.`);
                 }
-            } else if (response.intent === 'None') {
-                console.log(`[AI Scanner] Abaikan: Komentar tidak ada di Kamus AI.`);
-            } else {
-                console.log(`[AI Scanner] Abaikan: Skor terlalu rendah (< ${requiredConfidence}).`);
             }
         } catch (error) { console.error('[Engine] Error AI:', error); } 
         finally { this.isProcessingComment = false; }
